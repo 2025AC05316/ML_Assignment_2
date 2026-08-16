@@ -1,170 +1,530 @@
-from pathlib import Path
-import json
-import joblib
-import numpy as np
-import pandas as pd
 import streamlit as st
+import pandas as pd
 import matplotlib.pyplot as plt
 
+from sklearn.datasets import load_breast_cancer
+from sklearn.model_selection import train_test_split
+from sklearn.preprocessing import StandardScaler
+from sklearn.pipeline import Pipeline
+
+from sklearn.linear_model import LogisticRegression
+from sklearn.tree import DecisionTreeClassifier
+from sklearn.neighbors import KNeighborsClassifier
+from sklearn.naive_bayes import GaussianNB
+from sklearn.ensemble import RandomForestClassifier
+
 from sklearn.metrics import (
-    accuracy_score, roc_auc_score, precision_score,
-    recall_score, f1_score, matthews_corrcoef,
-    confusion_matrix, classification_report
+    accuracy_score,
+    roc_auc_score,
+    precision_score,
+    recall_score,
+    f1_score,
+    matthews_corrcoef,
+    confusion_matrix,
+    classification_report
 )
 
+# ---------------------------------------------------------
+# Page setup
+# ---------------------------------------------------------
+
 st.set_page_config(
-    page_title="Loan/Medical Risk Classification Model Lab",
+    page_title="ML Classification Model Evaluation",
     page_icon="🧠",
     layout="wide"
 )
 
-ROOT = Path(__file__).resolve().parent
-MODEL_DIR = ROOT / "model"
+RANDOM_STATE = 42
 
-MODEL_FILES = {
-    "Logistic Regression": MODEL_DIR / "logistic_regression.joblib",
-    "Decision Tree": MODEL_DIR / "decision_tree.joblib",
-    "kNN": MODEL_DIR / "knn.joblib",
-    "Naive Bayes": MODEL_DIR / "naive_bayes.joblib",
-    "Random Forest": MODEL_DIR / "random_forest.joblib",
-}
 
-metadata = json.loads((ROOT / "metadata.json").read_text())
-reference_metrics = pd.read_csv(ROOT / "model_metrics.csv")
+# ---------------------------------------------------------
+# Load Dataset
+# ---------------------------------------------------------
 
-st.title("🧠 ML Classification Model Evaluation Lab")
-st.caption(
-    "BITS Pilani Machine Learning Assignment 2 | "
-    "Breast Cancer Wisconsin (Diagnostic) dataset"
-)
+@st.cache_data
+def load_data():
 
-with st.sidebar:
-    st.header("Controls")
-    selected_model_name = st.selectbox(
-        "Select classification model",
-        list(MODEL_FILES.keys())
-    )
-    uploaded_file = st.file_uploader(
-        "Upload test CSV",
-        type=["csv"],
-        help="Use the supplied test_data.csv or another CSV with the same feature columns. "
-             "Include a 'target' column to calculate evaluation metrics."
+    data = load_breast_cancer(as_frame=True)
+
+    X = data.data
+    y = data.target
+
+    X_train, X_test, y_train, y_test = train_test_split(
+        X,
+        y,
+        test_size=0.15,
+        stratify=y,
+        random_state=RANDOM_STATE
     )
 
-    st.markdown("---")
-    st.markdown("**Dataset requirements met**")
-    st.write(f"Instances: {metadata['n_instances']}")
-    st.write(f"Features: {metadata['n_features']}")
-    st.write(f"Split: {metadata['split']}")
+    return (
+        X_train,
+        X_test,
+        y_train,
+        y_test,
+        list(X.columns),
+        list(data.target_names)
+    )
 
-tab1, tab2, tab3 = st.tabs(
-    ["Model Evaluation", "All-Model Comparison", "Dataset Guide"]
-)
 
-with tab1:
-    st.subheader(selected_model_name)
+# ---------------------------------------------------------
+# Train Models
+# ---------------------------------------------------------
 
-    if uploaded_file is None:
-        st.info("Upload `test_data.csv` from the repository to evaluate the selected model.")
-    else:
-        df = pd.read_csv(uploaded_file)
+@st.cache_resource
+def train_models(X_train, y_train):
 
-        required_features = metadata["feature_names"]
-        missing = [c for c in required_features if c not in df.columns]
+    models = {
 
-        if missing:
-            st.error(
-                "Uploaded file is missing required feature columns:\n\n"
-                + ", ".join(missing)
+        "Logistic Regression":
+            Pipeline([
+                ("scaler", StandardScaler()),
+                ("model",
+                 LogisticRegression(
+                     max_iter=5000,
+                     random_state=RANDOM_STATE
+                 ))
+            ]),
+
+        "Decision Tree":
+            DecisionTreeClassifier(
+                max_depth=5,
+                random_state=RANDOM_STATE
+            ),
+
+        "kNN":
+            Pipeline([
+                ("scaler", StandardScaler()),
+                ("model",
+                 KNeighborsClassifier(
+                     n_neighbors=7
+                 ))
+            ]),
+
+        "Naive Bayes":
+            GaussianNB(),
+
+        "Random Forest":
+            RandomForestClassifier(
+                n_estimators=300,
+                random_state=RANDOM_STATE,
+                n_jobs=-1,
+                class_weight="balanced"
             )
-        else:
-            model = joblib.load(MODEL_FILES[selected_model_name])
-            X = df[required_features]
+    }
 
-            y_pred = model.predict(X)
-            y_prob = model.predict_proba(X)[:, 1]
+    for model in models.values():
+        model.fit(X_train, y_train)
 
-            result_df = df.copy()
-            result_df["prediction"] = y_pred
-            result_df["prediction_label"] = [
-                metadata["class_names"][int(v)] for v in y_pred
-            ]
-            result_df["positive_class_probability"] = y_prob
+    return models
 
-            st.markdown("#### Prediction preview")
-            st.dataframe(result_df.head(20), use_container_width=True)
 
-            if metadata["target_column"] in df.columns:
-                y_true = df[metadata["target_column"]].astype(int)
+# ---------------------------------------------------------
+# Load data
+# ---------------------------------------------------------
 
-                metrics = {
-                    "Accuracy": accuracy_score(y_true, y_pred),
-                    "AUC": roc_auc_score(y_true, y_prob),
-                    "Precision": precision_score(y_true, y_pred, zero_division=0),
-                    "Recall": recall_score(y_true, y_pred, zero_division=0),
-                    "F1": f1_score(y_true, y_pred, zero_division=0),
-                    "MCC": matthews_corrcoef(y_true, y_pred),
-                }
+(
+    X_train,
+    X_test,
+    y_train,
+    y_test,
+    feature_names,
+    class_names
+) = load_data()
 
-                cols = st.columns(6)
-                for col, (name, value) in zip(cols, metrics.items()):
-                    col.metric(name, f"{value:.4f}")
 
-                st.markdown("#### Confusion matrix")
-                cm = confusion_matrix(y_true, y_pred)
-                fig, ax = plt.subplots(figsize=(4.8, 4.0))
-                im = ax.imshow(cm)
-                ax.set_xticks([0, 1], metadata["class_names"])
-                ax.set_yticks([0, 1], metadata["class_names"])
-                ax.set_xlabel("Predicted")
-                ax.set_ylabel("Actual")
-                for i in range(cm.shape[0]):
-                    for j in range(cm.shape[1]):
-                        ax.text(j, i, int(cm[i, j]), ha="center", va="center")
-                fig.colorbar(im, ax=ax)
-                st.pyplot(fig)
+# ---------------------------------------------------------
+# Train all five models
+# ---------------------------------------------------------
 
-                st.markdown("#### Classification report")
-                report = classification_report(
-                    y_true, y_pred,
-                    target_names=metadata["class_names"],
-                    output_dict=True,
-                    zero_division=0
-                )
-                st.dataframe(pd.DataFrame(report).T, use_container_width=True)
-            else:
-                st.warning(
-                    "No target column was found, so predictions are shown but evaluation "
-                    "metrics cannot be calculated."
-                )
+models = train_models(
+    X_train,
+    y_train
+)
 
-with tab2:
-    st.subheader("Reference performance on the fixed 15% hold-out test set")
-    display = reference_metrics.copy()
-    numeric_cols = ["Accuracy", "AUC", "Precision", "Recall", "F1", "MCC"]
-    display[numeric_cols] = display[numeric_cols].round(4)
-    st.dataframe(display, use_container_width=True)
 
-    best_idx = reference_metrics["MCC"].idxmax()
-    best_name = reference_metrics.loc[best_idx, "ML Model Name"]
-    best_mcc = reference_metrics.loc[best_idx, "MCC"]
-    st.success(f"Overall winner by MCC: {best_name} (MCC = {best_mcc:.4f})")
+# ---------------------------------------------------------
+# Application Header
+# ---------------------------------------------------------
 
-with tab3:
-    st.markdown(
-        """
-        **Expected CSV structure**
-        - 30 numeric predictor columns matching the Breast Cancer Wisconsin (Diagnostic) features.
-        - Optional `target` column:
-          - `0` = malignant
-          - `1` = benign
+st.title(
+    "🧠 ML Classification Model Evaluation Lab"
+)
 
-        **What this app demonstrates**
-        - CSV upload for test data
-        - model-selection dropdown
-        - six required evaluation metrics
-        - confusion matrix
-        - classification report
-        - comparison of all five models specified in the assignment
-        """
+st.write(
+    "Breast Cancer Wisconsin (Diagnostic) Dataset"
+)
+
+st.success(
+    "All five ML models have been trained successfully."
+)
+
+
+# ---------------------------------------------------------
+# Model Selection
+# ---------------------------------------------------------
+
+selected_model_name = st.selectbox(
+    "Select Classification Model",
+    list(models.keys())
+)
+
+model = models[
+    selected_model_name
+]
+
+
+# ---------------------------------------------------------
+# Prediction
+# ---------------------------------------------------------
+
+y_pred = model.predict(
+    X_test
+)
+
+y_probability = model.predict_proba(
+    X_test
+)[:, 1]
+
+
+# ---------------------------------------------------------
+# Calculate six required metrics
+# ---------------------------------------------------------
+
+accuracy = accuracy_score(
+    y_test,
+    y_pred
+)
+
+auc = roc_auc_score(
+    y_test,
+    y_probability
+)
+
+precision = precision_score(
+    y_test,
+    y_pred,
+    zero_division=0
+)
+
+recall = recall_score(
+    y_test,
+    y_pred,
+    zero_division=0
+)
+
+f1 = f1_score(
+    y_test,
+    y_pred,
+    zero_division=0
+)
+
+mcc = matthews_corrcoef(
+    y_test,
+    y_pred
+)
+
+
+# ---------------------------------------------------------
+# Display metrics
+# ---------------------------------------------------------
+
+st.subheader(
+    f"{selected_model_name} Performance"
+)
+
+c1, c2, c3, c4, c5, c6 = st.columns(6)
+
+c1.metric(
+    "Accuracy",
+    f"{accuracy:.4f}"
+)
+
+c2.metric(
+    "AUC",
+    f"{auc:.4f}"
+)
+
+c3.metric(
+    "Precision",
+    f"{precision:.4f}"
+)
+
+c4.metric(
+    "Recall",
+    f"{recall:.4f}"
+)
+
+c5.metric(
+    "F1",
+    f"{f1:.4f}"
+)
+
+c6.metric(
+    "MCC",
+    f"{mcc:.4f}"
+)
+
+
+# ---------------------------------------------------------
+# Confusion Matrix
+# ---------------------------------------------------------
+
+st.subheader(
+    "Confusion Matrix"
+)
+
+cm = confusion_matrix(
+    y_test,
+    y_pred
+)
+
+fig, ax = plt.subplots()
+
+image = ax.imshow(cm)
+
+ax.set_xlabel(
+    "Predicted"
+)
+
+ax.set_ylabel(
+    "Actual"
+)
+
+ax.set_xticks(
+    [0, 1],
+    class_names
+)
+
+ax.set_yticks(
+    [0, 1],
+    class_names
+)
+
+for i in range(2):
+    for j in range(2):
+
+        ax.text(
+            j,
+            i,
+            cm[i, j],
+            ha="center",
+            va="center"
+        )
+
+fig.colorbar(
+    image,
+    ax=ax
+)
+
+st.pyplot(fig)
+
+
+# ---------------------------------------------------------
+# Classification Report
+# ---------------------------------------------------------
+
+st.subheader(
+    "Classification Report"
+)
+
+report = classification_report(
+    y_test,
+    y_pred,
+    target_names=class_names,
+    output_dict=True,
+    zero_division=0
+)
+
+report_df = pd.DataFrame(
+    report
+).transpose()
+
+st.dataframe(
+    report_df,
+    use_container_width=True
+)
+
+
+# ---------------------------------------------------------
+# Test CSV Upload
+# ---------------------------------------------------------
+
+st.subheader(
+    "Upload Test Data"
+)
+
+uploaded_file = st.file_uploader(
+    "Upload CSV file",
+    type=["csv"]
+)
+
+if uploaded_file is not None:
+
+    uploaded_df = pd.read_csv(
+        uploaded_file
     )
+
+    st.write(
+        "Uploaded Data"
+    )
+
+    st.dataframe(
+        uploaded_df.head()
+    )
+
+    missing_columns = [
+        column
+        for column in feature_names
+        if column not in uploaded_df.columns
+    ]
+
+    if missing_columns:
+
+        st.error(
+            "Missing required columns: "
+            + ", ".join(
+                missing_columns
+            )
+        )
+
+    else:
+
+        uploaded_X = uploaded_df[
+            feature_names
+        ]
+
+        predictions = model.predict(
+            uploaded_X
+        )
+
+        probabilities = model.predict_proba(
+            uploaded_X
+        )[:, 1]
+
+        result = uploaded_df.copy()
+
+        result[
+            "Prediction"
+        ] = predictions
+
+        result[
+            "Prediction Label"
+        ] = [
+            class_names[int(x)]
+            for x in predictions
+        ]
+
+        result[
+            "Probability"
+        ] = probabilities
+
+        st.subheader(
+            "Prediction Results"
+        )
+
+        st.dataframe(
+            result,
+            use_container_width=True
+        )
+
+
+# ---------------------------------------------------------
+# Compare all models
+# ---------------------------------------------------------
+
+st.subheader(
+    "All Model Comparison"
+)
+
+comparison = []
+
+for name, current_model in models.items():
+
+    pred = current_model.predict(
+        X_test
+    )
+
+    probability = current_model.predict_proba(
+        X_test
+    )[:, 1]
+
+    comparison.append({
+
+        "ML Model Name":
+            name,
+
+        "Accuracy":
+            accuracy_score(
+                y_test,
+                pred
+            ),
+
+        "AUC":
+            roc_auc_score(
+                y_test,
+                probability
+            ),
+
+        "Precision":
+            precision_score(
+                y_test,
+                pred,
+                zero_division=0
+            ),
+
+        "Recall":
+            recall_score(
+                y_test,
+                pred,
+                zero_division=0
+            ),
+
+        "F1":
+            f1_score(
+                y_test,
+                pred,
+                zero_division=0
+            ),
+
+        "MCC":
+            matthews_corrcoef(
+                y_test,
+                pred
+            )
+    })
+
+
+comparison_df = pd.DataFrame(
+    comparison
+)
+
+st.dataframe(
+    comparison_df,
+    use_container_width=True
+)
+
+
+# ---------------------------------------------------------
+# Find best model
+# ---------------------------------------------------------
+
+best_index = comparison_df[
+    "MCC"
+].idxmax()
+
+best_model = comparison_df.loc[
+    best_index,
+    "ML Model Name"
+]
+
+best_mcc = comparison_df.loc[
+    best_index,
+    "MCC"
+]
+
+st.success(
+    f"Best model based on MCC: "
+    f"{best_model} "
+    f"(MCC = {best_mcc:.4f})"
+)
